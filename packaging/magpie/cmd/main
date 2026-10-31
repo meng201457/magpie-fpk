@@ -71,7 +71,10 @@ start_service() {
     export MAGPIE_WEB_KEY
     export HOME="$TRIM_PKGHOME" XDG_CONFIG_HOME="$TRIM_PKGETC"
     export XDG_CACHE_HOME="$TRIM_PKGVAR/cache" XDG_DATA_HOME="$TRIM_PKGVAR/data" XDG_STATE_HOME="$TRIM_PKGVAR/state"
-    export TMPDIR="$TRIM_PKGTMP" MAGPIE_ADDR=127.0.0.1:3425
+    export TMPDIR="$TRIM_PKGTMP"
+    # Upstream defaults to loopback; pinning this env var would prevent its
+    # LAN-sharing switch from moving the listener to the network later.
+    unset MAGPIE_ADDR
     mkdir -p "$HOME" "$XDG_CACHE_HOME" "$XDG_DATA_HOME" "$XDG_STATE_HOME" "$TMPDIR"
     touch "$LOG_FILE"
     chmod 600 "$LOG_FILE"

@@ -1,0 +1,3 @@
+#!/bin/bash
+# Leave application data retention to the fnOS application center.
+exit 0

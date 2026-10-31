@@ -1,0 +1,111 @@
+name: Build fnOS packages
+
+on:
+  push:
+    branches: [main]
+    tags: ['fpk-v*']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: fpk-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
+
+jobs:
+  version:
+    runs-on: ubuntu-24.04
+    outputs:
+      package: ${{ steps.version.outputs.package }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Resolve package version
+        id: version
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import json, os, re
+          from pathlib import Path
+          lock = json.loads(Path('upstream.lock.json').read_text())
+          version = lock['package_version']
+          if not re.fullmatch(r'(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)', version):
+              raise SystemExit('Invalid package_version in upstream.lock.json')
+          ref = os.environ['GITHUB_REF']
+          if ref.startswith('refs/tags/') and ref != 'refs/tags/fpk-v' + version:
+              raise SystemExit('Release tag must match package_version in upstream.lock.json')
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as out:
+              out.write('package=' + version + '\n')
+          PY
+
+  build:
+    needs: version
+    name: Package ${{ matrix.arch }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [amd64, arm64]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Fetch pinned upstream source
+        run: python3 scripts/build.py --fetch-only
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: build/upstream/go.mod
+          cache-dependency-path: build/upstream/go.sum
+      - name: Check lifecycle script syntax
+        run: |
+          for script in packaging/magpie/cmd/*; do bash -n "$script"; done
+      - name: Build native binary and official FPK
+        env:
+          PACKAGE_VERSION: ${{ needs.version.outputs.package }}
+          TARGET_ARCH: ${{ matrix.arch }}
+        run: python3 scripts/build.py --arch "$TARGET_ARCH" --version "$PACKAGE_VERSION"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: magpie-fpk-${{ matrix.arch }}
+          path: dist/*
+          if-no-files-found: error
+          retention-days: 14
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/fpk-v')
+    needs: [version, build]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: magpie-fpk-*
+          path: dist
+          merge-multiple: true
+      - name: Publish both architectures
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ github.ref_name }}
+          PACKAGE_VERSION: ${{ needs.version.outputs.package }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd dist
+          test -s "magpie-${PACKAGE_VERSION}-x86.fpk"
+          test -s "magpie-${PACKAGE_VERSION}-arm64.fpk"
+          sha256sum --check -- *.fpk.sha256
+          cat > release-notes.md <<'EOF'
+          Magpie 飞牛 fnOS 原生应用，包含 x86_64 和 ARM64 两种安装包。
+
+          在飞牛应用中心手动安装对应架构的 .fpk，设置 Web 管理密钥，点击桌面 Magpie 图标打开管理网页。首次访问输入安装时设置的密钥。
+
+          Web 管理端口：3430。无需 Docker。设备安装与兼容性请参阅仓库 README。
+          EOF
+          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            gh release upload "$RELEASE_TAG" ./*.fpk ./*.sha256 ./*.build-info.json --clobber
+          else
+            gh release create "$RELEASE_TAG" ./*.fpk ./*.sha256 ./*.build-info.json \
+              --verify-tag --title "Magpie fnOS ${PACKAGE_VERSION}" --notes-file release-notes.md
+          fi

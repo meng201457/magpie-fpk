@@ -1,0 +1,6 @@
+#!/bin/bash
+set -euo pipefail
+source "$(dirname "${BASH_SOURCE[0]}")/common"
+# Wizard installation values may still be in the environment on upgrade.
+unset wizard_web_key
+initialize

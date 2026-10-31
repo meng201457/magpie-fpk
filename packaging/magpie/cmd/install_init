@@ -1,0 +1,4 @@
+#!/bin/bash
+set -euo pipefail
+source "$(dirname "${BASH_SOURCE[0]}")/common"
+valid_key "${wizard_web_key:-}" || fail '请设置 16–128 位有效的 Web 管理密钥。'

@@ -1,0 +1,42 @@
+#!/bin/bash
+set -euo pipefail
+umask 077
+
+fail() {
+    printf '%s\n' "$1" >&2
+    if [[ -n ${TRIM_TEMP_LOGFILE:-} ]]; then
+        printf '%s\n' "$1" > "$TRIM_TEMP_LOGFILE"
+    fi
+    exit 1
+}
+
+valid_key() {
+    local key=$1
+    [[ ${#key} -ge 16 && ${#key} -le 128 && $key != *[!A-Za-z0-9._~-]* ]]
+}
+
+paths() {
+    : "${TRIM_APPDEST:?}" "${TRIM_PKGETC:?}" "${TRIM_PKGVAR:?}" "${TRIM_PKGHOME:?}" "${TRIM_PKGTMP:?}"
+    KEY_FILE="$TRIM_PKGETC/web.key"
+    PID_FILE="$TRIM_PKGVAR/magpie.pid"
+    LOG_FILE="$TRIM_PKGVAR/magpie.log"
+    BINARY="$TRIM_APPDEST/bin/magpie"
+}
+
+initialize() {
+    paths
+    mkdir -p "$TRIM_PKGETC" "$TRIM_PKGVAR" "$TRIM_PKGHOME" "$TRIM_PKGTMP" \
+        "$TRIM_PKGVAR/cache" "$TRIM_PKGVAR/data" "$TRIM_PKGVAR/state"
+    if [[ -n ${wizard_web_key:-} ]]; then
+        valid_key "$wizard_web_key" || fail '管理密钥须为 16–128 位字母、数字或 - . _ ~。'
+        printf '%s\n' "$wizard_web_key" > "$KEY_FILE.new"
+        chmod 600 "$KEY_FILE.new"
+        mv -f "$KEY_FILE.new" "$KEY_FILE"
+    elif [[ ! -s $KEY_FILE ]]; then
+        fail '缺少 Web 管理密钥，请在安装向导中设置。'
+    fi
+    local key
+    IFS= read -r key < "$KEY_FILE" || true
+    valid_key "$key" || fail '已保存的 Web 管理密钥无效。'
+    chmod 600 "$KEY_FILE"
+}

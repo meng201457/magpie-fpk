@@ -1,0 +1,112 @@
+#!/bin/bash
+set -euo pipefail
+source "$(dirname "${BASH_SOURCE[0]}")/common"
+paths
+
+# /proc start time prevents a stale PID from identifying a different process.
+identity() {
+    local process=$1 stat rest
+    [[ $process =~ ^[1-9][0-9]*$ && -r /proc/$process/stat ]] || return 1
+    IFS= read -r stat < "/proc/$process/stat" || return 1
+    rest=${stat##*) }
+    local fields
+    read -ra fields <<< "$rest"
+    [[ ${fields[0]} != Z ]] || return 1
+    printf '%s' "${fields[19]}"
+}
+
+running() {
+    [[ -r $PID_FILE ]] || return 1
+    local pid ticks current executable
+    read -r pid ticks < "$PID_FILE" || return 1
+    current=$(identity "$pid") || return 1
+    [[ $current == "$ticks" ]] || return 1
+    executable=$(readlink -f "/proc/$pid/exe") || return 1
+    [[ $executable == "$(readlink -f "$BINARY")" ]] || return 1
+}
+
+stop_service() {
+    if running; then
+        local pid ticks
+        read -r pid ticks < "$PID_FILE"
+        kill -TERM "$pid" 2>/dev/null || true
+        for ((i=0; i<20; i++)); do
+            running || break
+            sleep 0.5
+        done
+        if running; then
+            kill -KILL "$pid" 2>/dev/null || true
+        fi
+    fi
+    rm -f "$PID_FILE"
+}
+
+web_ready() {
+    local status
+    (
+        exec 8<>/dev/tcp/127.0.0.1/3430 || exit 1
+        printf 'GET / HTTP/1.0\r\nHost: localhost\r\nConnection: close\r\n\r\n' >&8
+        IFS= read -r -t 2 status <&8 || exit 1
+        [[ $status == HTTP/*' 401 '* ]]
+    ) 2>/dev/null
+}
+
+redact_log() {
+    local line
+    while IFS= read -r line || [[ -n $line ]]; do
+        printf '%s\n' "${line//"$MAGPIE_WEB_KEY"/[REDACTED]}"
+    done
+}
+
+start_service() {
+    running && return 0
+    [[ -x $BINARY ]] || fail 'Magpie 可执行文件缺失，请重新安装应用。'
+    [[ -s $KEY_FILE ]] || fail '缺少 Web 管理密钥，请重新安装并设置密钥。'
+    IFS= read -r MAGPIE_WEB_KEY < "$KEY_FILE" || true
+    valid_key "$MAGPIE_WEB_KEY" || fail 'Web 管理密钥无效。'
+    # Reject a port collision rather than treating another process as ours.
+    if (exec 8<>/dev/tcp/127.0.0.1/3430) 2>/dev/null; then
+        fail '端口 3430 已被占用，请停止占用服务后重试。'
+    fi
+    export MAGPIE_WEB_KEY
+    export HOME="$TRIM_PKGHOME" XDG_CONFIG_HOME="$TRIM_PKGETC"
+    export XDG_CACHE_HOME="$TRIM_PKGVAR/cache" XDG_DATA_HOME="$TRIM_PKGVAR/data" XDG_STATE_HOME="$TRIM_PKGVAR/state"
+    export TMPDIR="$TRIM_PKGTMP" MAGPIE_ADDR=127.0.0.1:3425
+    mkdir -p "$HOME" "$XDG_CACHE_HOME" "$XDG_DATA_HOME" "$XDG_STATE_HOME" "$TMPDIR"
+    touch "$LOG_FILE"
+    chmod 600 "$LOG_FILE"
+    # Retain one previous log instead of growing across every restart.
+    if [[ $(wc -c < "$LOG_FILE") -gt 10485760 ]]; then
+        mv -f "$LOG_FILE" "$LOG_FILE.1"
+        touch "$LOG_FILE"
+        chmod 600 "$LOG_FILE"
+    fi
+    cd "$TRIM_APPDEST"
+    "$BINARY" web --addr 0.0.0.0:3430 --no-open --gateway \
+        9>&- > >(redact_log >> "$LOG_FILE" 2>&1 9>&-) 2>&1 &
+    local pid=$! ticks
+    ticks=$(identity "$pid") || fail 'Magpie 启动失败，请检查应用日志。'
+    printf '%s %s\n' "$pid" "$ticks" > "$PID_FILE"
+    for ((i=0; i<60; i++)); do
+        if running && web_ready; then
+            return 0
+        fi
+        kill -0 "$pid" 2>/dev/null || break
+        sleep 0.5
+    done
+    stop_service
+    fail 'Magpie 启动后未能就绪，请检查应用数据目录中的 magpie.log。'
+}
+
+case ${1:-} in
+    status)
+        if running; then exit 0; else exit 3; fi
+        ;;
+    start|stop)
+        mkdir -p "$TRIM_PKGVAR"
+        exec 9> "$TRIM_PKGVAR/service.lock"
+        flock -w 30 9 || fail '应用操作正在执行，请稍后重试。'
+        if [[ $1 == start ]]; then start_service; else stop_service; fi
+        ;;
+    *) exit 1 ;;
+esac

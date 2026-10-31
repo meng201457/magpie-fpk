@@ -1,0 +1,6 @@
+.cache/
+dist/
+build/
+__pycache__/
+.superpowers/
+.worktrees/

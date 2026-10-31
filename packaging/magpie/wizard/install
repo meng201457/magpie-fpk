@@ -1,0 +1,20 @@
+[
+  {
+    "stepTitle": "Magpie Web 管理",
+    "items": [
+      {
+        "type": "tips",
+        "helpText": "安装后点击桌面 Magpie 图标打开网页。首次登录请输入下方设置的管理密钥；请妥善保存。Web 管理端口为 3430。"
+      },
+      {
+        "type": "password",
+        "field": "wizard_web_key",
+        "label": "Web 管理密钥",
+        "rules": [
+          {"required": true, "message": "请设置管理密钥"},
+          {"pattern": "^[A-Za-z0-9._~-]{16,128}$", "message": "使用 16–128 位字母、数字或 - . _ ~"}
+        ]
+      }
+    ]
+  }
+]

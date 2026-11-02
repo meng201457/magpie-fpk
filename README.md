@@ -32,7 +32,12 @@ NAS 上的 Magpie 负责共享网关；不会自动修改其他电脑上的 Code
 
 - 推送 `main`、提交 PR 或在 Actions 手动运行：构建两种 `.fpk`，在运行页面下载 artifacts。
 - 推送 `fpk-v<版本>` 标签：两种架构构建全部成功后，自动发布 GitHub Release。
-- 默认 `GITHUB_TOKEN` 即可，不需要设置个人访问令牌。工作流仅在发布任务申请 `contents: write`。
+- **每小时第 17 分钟**自动检查 `yetone/magpie` 的最新正式 Release；发现新版后固定其标签对应的提交，将安装包版本的补丁号加一（例如 `1.0.0` → `1.0.1`），构建 x86 / ARM64 安装包。两种架构全部成功并通过包校验后，提交 `upstream.lock.json`、创建 `fpk-v<版本>` 标签并发布 Release。
+- 没有新版且对应 Release 的两种安装包、校验文件和构建来源文件均完整时跳过构建。构建失败不更新仓库版本；发布缺失或附件不完整时下次检查重试，已创建标签的版本从该标签固定的打包源码重建。草稿和预发布版本不跟进，也不会自动降级；同版本上游标签改指其他提交时停止并要求人工检查。
+- 立即检查更新：在 `main` 分支运行 Actions 的 **Build fnOS packages**，勾选 **update_upstream**。不勾选时仍只构建当前固定版本。
+- 默认 `GITHUB_TOKEN` 即可，不需要设置个人访问令牌。工作流仅在发布任务申请 `contents: write`；仓库规则需允许该任务向 `main` 提交版本锁文件和创建标签。
+
+定时任务在工作流进入默认分支后生效，GitHub 调度可能延迟。外部仓库的 Release 不会直接触发本仓库，因此通过定时查询检测更新。自动提交标签后在同一次工作流继续发布，避免依赖 `GITHUB_TOKEN` 推送触发另一轮工作流。参阅 GitHub 官方说明：[定时事件](https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows#schedule)、[令牌触发限制](https://docs.github.com/en/actions/how-tos/write-workflows/choose-when-workflows-run/trigger-a-workflow#triggering-a-workflow-from-a-workflow)。
 
 首版包版本为 `1.0.0`。发布命令：
 
@@ -41,7 +46,7 @@ git tag fpk-v1.0.0
 git push origin fpk-v1.0.0
 ```
 
-后续发布先修改 `upstream.lock.json` 的 `package_version`，再推送同版本标签。上游源码提交及版本在该文件中固定；更新 Magpie 时同时更新 `commit` 和 `version`。上游更新保护补丁的上下文不匹配时构建会停止，需检查新版本实现后再更新补丁。
+自动更新会维护 `upstream.lock.json` 中的版本和提交。手动重打包时先递增 `package_version`，再推送同版本标签；手动更换上游源码时同时更新 `commit` 和 `version`。上游更新保护补丁的上下文不匹配时构建会停止，需检查新版本实现后再更新补丁。
 
 两种包均由 Linux x86_64 runner 交叉编译，分别声明飞牛 `platform=x86` / `platform=arm`，使用官方 `fnpack 1.2.3` 打包。ARM 包包含 ARM64 二进制，并非 ARM32。官方工具下载按记录的 SHA256 校验。
 
@@ -68,12 +73,12 @@ python3 scripts/build.py --arch arm64 --version 1.0.0
 
 ## 验证范围
 
-自动化流程只进行必要的脚本语法检查、真实 Go 编译、官方 fnpack 检查和发布前包校验，不运行额外测试套件。
+自动化流程进行脚本语法检查、上游版本解析与发布完整性测试、真实 Go 编译、官方 fnpack 检查和发布前包校验。本地可运行 `python -m unittest discover -s tests -v` 检查更新解析逻辑。
 
 构建成功代表两种安装包已生成，不等于已在所有飞牛版本和硬件上完成设备验证。安装后请确认图标跳转、密钥登录、启动停止和升级后数据保留。首次发布尚需飞牛设备实装确认。
 
 ## 来源与许可
 
-Magpie 上游版本：`v0.1.2322`，提交：`bdc1617bed7a29e114ebf755fd8f1af1a69d8790`。上游采用 MIT 许可，原始 LICENSE 和 THIRD_PARTY_NOTICES 随包提供。本仓库打包代码也采用 MIT 许可。
+当前固定的 Magpie 上游版本及提交见 [`upstream.lock.json`](upstream.lock.json)；每个发布包的 `.build-info.json` 也记录实际来源。上游采用 MIT 许可，原始 LICENSE 和 THIRD_PARTY_NOTICES 随包提供。本仓库打包代码也采用 MIT 许可。
 
 实现依据飞牛官方文档：[应用框架](https://developer.fnnas.com/docs/core-concepts/framework/)、[应用入口](https://developer.fnnas.com/docs/core-concepts/app-entry/)、[应用权限](https://developer.fnnas.com/docs/core-concepts/privilege/)、[用户向导](https://developer.fnnas.com/docs/core-concepts/wizard/)、[fnpack](https://developer.fnnas.com/docs/cli/fnpack/)。仅注册入口和运行独立 Web 服务，无需申请开放 API 权限。

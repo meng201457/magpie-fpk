@@ -6,21 +6,44 @@ on:
     tags: ['fpk-v*']
   pull_request:
   workflow_dispatch:
+    inputs:
+      update_upstream:
+        description: Check the latest stable upstream release and publish packages (main only)
+        type: boolean
+        default: false
+  schedule:
+    - cron: '17 * * * *'
 
 permissions:
   contents: read
 
 concurrency:
-  group: fpk-${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
+  group: fpk-${{ github.ref }}
+  cancel-in-progress: false
 
 jobs:
   version:
     runs-on: ubuntu-24.04
     outputs:
       package: ${{ steps.version.outputs.package }}
+      upstream: ${{ steps.version.outputs.upstream }}
+      source_ref: ${{ steps.check.outputs.source_ref || github.sha }}
+      should_build: ${{ steps.check.outputs.should_build || 'true' }}
+      auto_update: ${{ github.event_name == 'schedule' || inputs.update_upstream == true }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Check upstream resolver
+        run: python3 -m unittest discover -s tests -v
+      - name: Check latest stable upstream release
+        id: check
+        if: github.event_name == 'schedule' || inputs.update_upstream == true
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          test "$GITHUB_REF" = refs/heads/main
+          python3 scripts/check_upstream.py
       - name: Resolve package version
         id: version
         shell: bash
@@ -37,9 +60,16 @@ jobs:
               raise SystemExit('Release tag must match package_version in upstream.lock.json')
           with open(os.environ['GITHUB_OUTPUT'], 'a') as out:
               out.write('package=' + version + '\n')
+              out.write('upstream=' + lock['version'] + '\n')
           PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: resolved-upstream-lock
+          path: upstream.lock.json
+          if-no-files-found: error
 
   build:
+    if: needs.version.outputs.should_build == 'true'
     needs: version
     name: Package ${{ matrix.arch }}
     runs-on: ubuntu-24.04
@@ -50,6 +80,13 @@ jobs:
         arch: [amd64, arm64]
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.version.outputs.source_ref }}
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: resolved-upstream-lock
+          path: .
       - name: Fetch pinned upstream source
         run: python3 scripts/build.py --fetch-only
       - uses: actions/setup-go@v5
@@ -72,23 +109,63 @@ jobs:
           retention-days: 14
 
   release:
-    if: startsWith(github.ref, 'refs/tags/fpk-v')
+    if: startsWith(github.ref, 'refs/tags/fpk-v') || needs.version.outputs.auto_update == 'true'
     needs: [version, build]
     runs-on: ubuntu-24.04
     permissions:
       contents: write
     steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/download-artifact@v4
+        with:
+          name: resolved-upstream-lock
+          path: .
       - uses: actions/download-artifact@v4
         with:
           pattern: magpie-fpk-*
           path: dist
           merge-multiple: true
+      - name: Verify both packages
+        env:
+          PACKAGE_VERSION: ${{ needs.version.outputs.package }}
+        run: |
+          set -euo pipefail
+          cd dist
+          test -s "magpie-${PACKAGE_VERSION}-x86.fpk"
+          test -s "magpie-${PACKAGE_VERSION}-arm64.fpk"
+          sha256sum --check -- *.fpk.sha256
+      - name: Commit updated lock and create release tag
+        if: needs.version.outputs.auto_update == 'true'
+        env:
+          PACKAGE_VERSION: ${{ needs.version.outputs.package }}
+          UPSTREAM_VERSION: ${{ needs.version.outputs.upstream }}
+        run: |
+          set -euo pipefail
+          test "$GITHUB_REF" = refs/heads/main
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add upstream.lock.json
+          if ! git diff --cached --quiet; then
+            git commit -m "chore: update Magpie to ${UPSTREAM_VERSION} (fpk ${PACKAGE_VERSION})"
+          fi
+          tag="fpk-v${PACKAGE_VERSION}"
+          if git rev-parse --verify "refs/tags/$tag" >/dev/null 2>&1; then
+            git show "$tag:upstream.lock.json" > "$RUNNER_TEMP/tag-lock.json"
+            cmp upstream.lock.json "$RUNNER_TEMP/tag-lock.json"
+          else
+            git tag "$tag"
+          fi
+          # Reject concurrent main changes; never force-push or move an existing tag.
+          git push --atomic origin HEAD:refs/heads/main "refs/tags/$tag"
       - name: Publish both architectures
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
-          RELEASE_TAG: ${{ github.ref_name }}
+          RELEASE_TAG: fpk-v${{ needs.version.outputs.package }}
           PACKAGE_VERSION: ${{ needs.version.outputs.package }}
+          UPSTREAM_VERSION: ${{ needs.version.outputs.upstream }}
         shell: bash
         run: |
           set -euo pipefail
@@ -103,8 +180,10 @@ jobs:
 
           Web 管理端口：3430。无需 Docker。设备安装与兼容性请参阅仓库 README。
           EOF
+          printf '\n上游版本：%s\n' "$UPSTREAM_VERSION" >> release-notes.md
           if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
             gh release upload "$RELEASE_TAG" ./*.fpk ./*.sha256 ./*.build-info.json --clobber
+            gh release edit "$RELEASE_TAG" --draft=false --prerelease=false
           else
             gh release create "$RELEASE_TAG" ./*.fpk ./*.sha256 ./*.build-info.json \
               --verify-tag --title "Magpie fnOS ${PACKAGE_VERSION}" --notes-file release-notes.md

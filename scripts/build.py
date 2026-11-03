@@ -151,6 +151,9 @@ def prepare_package(source, binary, destination, arch, version, lock):
     (destination / 'app/bin/magpie').chmod(0o755)
     for size, original, package_icon in [(64, 'icon.png', 'ICON.PNG'), (256, 'icon-256.png', 'ICON_256.PNG')]:
         icon = source / 'internal/gui' / original
+        # Newer upstream releases keep the 64px icon only in the Windows assets.
+        if size == 64 and not icon.is_file():
+            icon = source / 'build/windows/icon-64.png'
         if png_size(icon) != (size, size):
             raise ValueError('wrong upstream icon dimensions')
         shutil.copy2(icon, destination / package_icon)

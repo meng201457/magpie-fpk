@@ -34,7 +34,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
-      - name: Check upstream resolver
+      - name: Check upstream resolver and package preparation
         run: python3 -m unittest discover -s tests -v
       - name: Check latest stable upstream release
         id: check

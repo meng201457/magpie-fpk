@@ -1,8 +1,8 @@
 {
   "repository": "yetone/magpie",
-  "version": "v0.1.2909",
-  "commit": "0ee424e3ee61ae545d93160084a8d930b88a8193",
-  "package_version": "1.0.6",
+  "version": "v0.1.2977",
+  "commit": "9d0c9b41eab677e904b38f1cd413099f05528ff9",
+  "package_version": "1.0.7",
   "fnpack": {
     "version": "1.2.3",
     "url": "https://static2.fnnas.com/fnpack/fnpack-1.2.3-linux-amd64",
